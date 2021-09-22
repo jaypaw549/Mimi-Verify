@@ -20,6 +20,7 @@ namespace Mimi_Verify
 
         private static delegate*<int> execution_mode = &Prompt;
         private static Stream output = Console.OpenStandardOutput();
+        private static bool file_output = false;
         private static bool raw_output = false;
 
         private static byte[] hash = null;
@@ -82,15 +83,39 @@ namespace Mimi_Verify
             return base_conversion[c];
         }
 
+        static int Help()
+        {
+            Console.WriteLine("Mimi-Verify.exe [args]");
+            Console.WriteLine();
+            Console.WriteLine("-challenge                      \tGenerates a random hash, then prompts for a signed version of it, then checks against it using the specified public key");
+            Console.WriteLine("-data <file_or_base56_data>     \tSpecifies a file or hash, if it's a file it will be hashed");
+            Console.WriteLine("-key <file_or_base56_data>      \tSpecifies a private or public key written in base56, or stored in a file");
+            Console.WriteLine("-new                            \tCreates a new key pair, no other options will be considered");
+            Console.WriteLine("-out <file>                     \tSpecifies an output file to write the output of commands to");
+            Console.WriteLine("-process                        \tDumps whatever it reads to output");
+            Console.WriteLine("-raw                            \tSpecifies that output does not need to be human-readable. Good for storing keys and signatures.");
+            Console.WriteLine("-sign                           \tSpecifies that we're going to sign the input data (see -data)");
+            Console.WriteLine("-signature <file_or_base56_data>\tSpecifies a signature we're going to read");
+            Console.WriteLine("-verify                         \tSpecifies we're going to verify a signature against the data and key (public)");
+
+            return 0;
+        }
+
         static int Main(string[] args)
         {
             for (int i = 0; i < args.Length; i++)
                 ReadArg(args, ref i);
 
+            int ret;
             if (execution_mode != null)
-                return execution_mode();
+                ret = execution_mode();
+            else
+                ret = 1;
 
-            return 1;
+            output.Flush();
+            output.Close();
+
+            return ret;
         }
 
         static int NewKey()
@@ -121,9 +146,30 @@ namespace Mimi_Verify
             return 0;
         }
 
+        static int ProcessData()
+        {
+            byte[] data = key ?? signature ?? hash;
+
+            while (data == null)
+                TryReadOrParse(ReceiveUserInput("Key/Hash/Signature/File: "), out data);
+
+            if (raw_output)
+                output.Write(data);
+            else
+                output.Write(encoding.GetBytes(ToBaseCharacters(data) + Environment.NewLine));
+
+            return 0;
+        }
+
         static int Prompt()
         {
-            Console.Write("Challenge, New Key, Sign, or Verify? [C,N,S,V] ");
+            Console.WriteLine("Challenge - Create a hash for someone else to sign, then verify the signature they provide.");
+            Console.WriteLine("New Key   - Generate a Keypair, you must keep the private key secret, post the public key wherever.");
+            Console.WriteLine("Process   - Read data in, and dump it to the console or to a file in raw format (Useful for storing keys and signatures in files, or extracting them)");
+            Console.WriteLine("Sign      - Sign data, this allows people to verify that a file hasn't been tampered with since you had it last, in addition to verifying the file is from you.");
+            Console.WriteLine("Verify    - Verify a signature, this checks whether a signature matches a file or hash, and that it came from the person you think it came from.");
+            Console.WriteLine();
+            Console.Write("Challenge, New Key, Process, Sign, or Verify? [C,N,P,S,V] ");
             int ret = -1;
             while(ret == -1)
             {
@@ -139,6 +185,12 @@ namespace Mimi_Verify
                         ret = NewKey();
                         break;
 
+                    case ConsoleKey.P:
+                        Console.WriteLine("P");
+                        PromptConfig();
+                        ret = ProcessData();
+                        break;
+
                     case ConsoleKey.S:
                         Console.WriteLine("S");
                         ret = Sign();
@@ -148,13 +200,42 @@ namespace Mimi_Verify
                         Console.WriteLine("V");
                         ret = Verify();
                         break;
+
+                    default:
+                        Console.Beep();
+                        break;
                 }
             }
 
-            while (Console.ReadKey(true).Key != ConsoleKey.Enter)
-                continue;
+            if (!file_output)
+                while (Console.ReadKey(true).Key != ConsoleKey.Enter)
+                    continue;
 
             return ret;
+        }
+
+        static void PromptConfig()
+        {
+            Console.Write("Output to File? [Y/N] ");
+            while (true)
+            {
+                switch (Console.ReadKey(true).Key)
+                {
+                    case ConsoleKey.N:
+                        Console.WriteLine("N");
+                        return; ;
+
+                    case ConsoleKey.Y:
+                        Console.WriteLine("Y");
+                        SetOutput(ReceiveUserInput("Output File: "));
+                        raw_output = true;
+                        return;
+
+                    default:
+                        Console.Beep();
+                        break;
+                }
+            }
         }
 
         static string ReceiveUserInput(string prompt)
@@ -178,6 +259,10 @@ namespace Mimi_Verify
                         Error(args, out i, "Must specify a valid hash or file!");
                     break;
 
+                case "-help":
+                    execution_mode = &Help;
+                    break;
+
                 case "-key":
                     if (HasNext(args, i) && TryReadOrParse(args[i + 1], out key))
                         i++;
@@ -191,12 +276,13 @@ namespace Mimi_Verify
 
                 case "-out":
                     if (HasNext(args, i))
-                    {
-                        output.Close();
-                        output = File.Open(args[++i], FileMode.Append, FileAccess.Write);
-                    }
+                        SetOutput(args[++i]);
                     else
                         Error(args, out i, "Must provide an output file!");
+                    break;
+
+                case "-process":
+                    execution_mode = &ProcessData;
                     break;
 
                 case "-raw":
@@ -228,6 +314,13 @@ namespace Mimi_Verify
 
             static bool HasNext(string[] args, int i)
                 => i + 1 < args.Length;
+        }
+
+        static void SetOutput(string dest)
+        {
+            output.Close();
+            output = File.Open(dest, FileMode.Append, FileAccess.Write);
+            file_output = true;
         }
 
         static int Sign()
@@ -303,7 +396,6 @@ namespace Mimi_Verify
                 for (int i = 0; i < base_characters.Length; i++)
                     base_conversion[base_characters[i]] = i;
             }
-
             
             BigInteger value = BigInteger.Zero;
             for (int i = 0; i < data.Length; i++)
